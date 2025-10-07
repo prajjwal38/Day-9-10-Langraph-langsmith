@@ -1,94 +1,97 @@
-
 import os
 import hashlib
 from dotenv import load_dotenv
-
-# Import necessary components for memory (Task D)
-from langgraph.checkpoint.sqlite import SqliteSaver
-
-# Note: We must ensure the import path for the workflow is correct based on the file structure.
+try:
+    from langgraph.checkpoint.sqlite import SqliteSaver
+except ImportError:
+    from langgraph_checkpoint_sqlite import SqliteSaver
 from graphs.workflow import build_workflow
 
-# Load environment variables for API keys and tracing setup (Task E)
+# Task E: Load environment variables for tracing
 load_dotenv()
 
-# --- Execution Function ---
-def run_workflow():
-    """Builds and runs the reflective Q-A workflow with persistent memory."""
+# Verify tracing configuration is loaded
+print("=== Configuration Status ===")
+print(f"LangSmith Tracing: {os.getenv('LANGCHAIN_TRACING_V2', 'Not Set')}")
+print(f"LangSmith Project: {os.getenv('LANGCHAIN_PROJECT', 'Not Set')}")
+print(f"Gemini API Key: {'Set' if os.getenv('GEMINI_API_KEY') else 'Not Set'}")
+print(f"Tavily API Key: {'Set' if os.getenv('TAVILY_API_KEY') else 'Not Set'}")
+print()
 
-    # Task D: Initialize SqliteSaver for persistent memory
-    # Creates a database file named 'langgraph_memory.sqlite' in the 'checkpoints' directory.
-    checkpointer = SqliteSaver.from_conn_string(conn_string="checkpoints/langgraph_memory.sqlite")
 
-    # Compile the workflow, passing the checkpointer to enable state saving (Task D)
-    workflow_app = build_workflow().compile(checkpointer=checkpointer)
-
-    print("--- LangGraph Reflective Q-A Assistant ---")
-
-    # 1. Get user input
-    question = input("Ask a question: ")
-    if not question:
-        question = "What is the primary function of the LangGraph SqliteSaver checkpointer?"
-        print(f"Using default question: {question}")
-
-    # 2. Get Thread ID for Memory (Task D)
-    # A unique ID is needed to save and resume the thread's state.
-    # Use a hash of the question for simple, deterministic thread IDs.
-    thread_id = hashlib.sha256(question.encode()).hexdigest()[:10]
-    print(f"Generated Thread ID for persistence: {thread_id}")
-
-    # 3. Define the Configuration
-    # This config enables checkpointing (via thread_id) and tracing (via env vars - Task E)
-    config = {
-        "configurable": {
-            "thread_id": thread_id
+def run_qa_workflow(question: str):
+    """Execute the Q&A workflow with persistent memory and tracing"""
+    
+    # Task D: Setup SQLite checkpointer for persistent memory
+    with SqliteSaver.from_conn_string(
+        conn_string="checkpoints/langgraph_memory.sqlite"
+    ) as checkpointer:
+        
+        # Compile workflow with checkpointer
+        workflow = build_workflow().compile(checkpointer=checkpointer)
+        
+        # Task D: Generate unique thread_id from question for persistence
+        thread_id = hashlib.sha256(question.encode()).hexdigest()[:10]
+        
+        print(f"Thread ID: {thread_id}")
+        print(f"Question: {question}\n")
+        print("=" * 60)
+        print("Starting reflective Q&A workflow...")
+        print("=" * 60)
+        
+        # Execute workflow with config for persistence
+        config = {
+            "configurable": {
+                "thread_id": thread_id
+            }
         }
-    }
-
-    # Initial state, including the question and starting the retry count at 0
-    # Note: If this thread_id exists, the state will be loaded from the checkpoint.
-    initial_state = {"question": question, "retry_count": 0}
-
-    # Invoke the workflow
-    # LangSmith tracing (Task E) is automatically enabled here if environment variables are set.
-    for step in workflow_app.stream(initial_state, config=config):
-        # We can stream the steps, but for a concise output, we'll process the final result after the loop completes.
-        pass
-
-    # Retrieve the final state from the checkpointer after execution finishes
-    final_state = workflow_app.get_state(config).values
-
-    # --- Print Final Results ---
-
-    final_answer = final_state.get("final_answer")
-    final_draft = final_state.get("draft_answer")
-
-    # Determine the output to display
-    if final_answer:
-        output = final_answer
-        status = "Accepted and Finalized"
-    elif final_draft:
-        output = final_draft
-        status = "Best Draft after Max Retries"
-    else:
-        output = "Execution Complete (Final Answer Missing)"
-        status = "Completed"
-
-    print("\n" + "="*50)
-    print(f"Execution Summary (ID: {thread_id})")
-    print(f"Status: {status}")
-    print(f"Total Research/Refinement Cycles: {final_state.get('retry_count', 0)}")
-    print("\n[ FINAL ANSWER ]")
-    print(output)
-    print("="*50)
-
-    print(f"\n💡 Note: The state is saved under ID '{thread_id}'. You can use this ID to resume or inspect the trace in LangSmith (if configured).")
+        
+        # Initialize state with retry_count
+        initial_state = {
+            "question": question,
+            "retry_count": 0
+        }
+        
+        # Invoke the workflow
+        result = workflow.invoke(initial_state, config=config)
+    
+    # Display results
+    print("\n" + "=" * 60)
+    print("=== WORKFLOW COMPLETE ===")
+    print("=" * 60)
+    print(f"\n📊 Statistics:")
+    print(f"  - Total Research Iterations: {result.get('retry_count', 0)}")
+    print(f"  - Answer Accepted: {'Yes' if result.get('is_acceptable', False) else 'No'}")
+    print(f"  - Thread ID (for replay): {thread_id}")
+    
+    if result.get('reflection'):
+        print(f"\n💭 Final Reflection: {result['reflection']}")
+    
+    print(f"\n" + "=" * 60)
+    print("=== FINAL ANSWER ===")
+    print("=" * 60)
+    print(result.get("final_answer", "No answer generated."))
+    print()
+    
+    # LangSmith trace information
+    if os.getenv('LANGCHAIN_TRACING_V2') == 'true':
+        print("\n🔍 View detailed trace in LangSmith:")
+        print(f"   Project: {os.getenv('LANGCHAIN_PROJECT')}")
+        print(f"   Check your LangSmith dashboard for node-by-node execution trace")
+    
+    return result
 
 
 if __name__ == "__main__":
-    # Ensure the checkpoints directory exists for the SqliteSaver
-    if not os.path.exists("checkpoints"):
-        os.makedirs("checkpoints")
-
-    # The user is expected to run this file. We assume 'graphs/workflow.py' is complete.
-    run_workflow()
+    # Ensure checkpoints directory exists
+    os.makedirs("checkpoints", exist_ok=True)
+    
+    # Get question from user or use default
+    question = input("\nAsk me a question: ").strip()
+    
+    if not question:
+        question = "What are the latest developments in quantum computing in 2024?"
+        print(f"Using default question: {question}")
+    
+    # Run the workflow
+    run_qa_workflow(question)
